@@ -1,0 +1,322 @@
+#!/usr/bin/env bash
+#
+# Author: Pooya Moradi
+# Date : 2022-04-27
+# Description: Fetch pronounciation of a word from Google
+# Dependencies: curl
+#               ffplay | mpv | pw-play
+
+version=0.13
+accent="gb"
+year="2020" # 2024 sounds synthetic
+date=""
+link_mode_flag=0
+verbosity=0
+cached_mode=1
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/gsay"
+base_2020="http://gstatic.com/dictionary/static/sounds"
+base_2024="http://gstatic.com/dictionary/static/pronunciation"
+# base_2020="https://ssl.gstatic.com/dictionary/static/sounds"
+# base_2024="https://ssl.gstatic.com/dictionary/static/pronunciation"
+
+show_help() {
+    cat << EOF
+Usage: gsay [OPTIONS] QUERY
+DESCRIPTION
+    A simple client to fetch/play pronounciation of words from Google
+
+ARGUMENTS
+     QUERY
+        Query string
+        Note: Use "" or '' if query string contains special shell characters
+OPTIONS
+    [--year | -y]
+        Set desired database year: 2020 (default) | 2024
+    [--accent | -a]
+        Set desired accent: gb (default) | us
+    [--link | -l]
+        Only print pronounciation link. Don't play their audio
+    [--no-cache | -n]
+        Disable cache mode: ignore cache and don't save to cache directory
+        Default: cache mode is enabled. dir: $cache_dir
+    [--debug | -v]
+        Increase log verbosity to debug
+    [--version | -V]
+        Print version
+    [--help | -h]
+        Display the help message
+
+EXAMPLES
+    gsay legend
+    gsay -y 2024 -a us Leicester
+    gsay -n -y 2020 -a gb Forte
+    gsay Pneumonoultramicroscopicsilicovolcanoconiosis
+    gsay -l perfect
+    gsay carte blanche
+EOF
+}
+
+log() {
+    local mode
+    case "$1" in
+        "error")
+            mode="error"
+            ;;
+        "warn")
+            mode="warn"
+            ;;
+        "info")
+            mode="info"
+            ;;
+        "debug")
+            mode="debug"
+            ;;
+    esac
+    # skip debug logs if flag is not set
+    if [[ $mode == "debug" ]] && ((verbosity != 1)); then
+        return
+    fi
+    printf >&2 "[%-5s] %s\n" "$mode" "$2"
+}
+
+check_deps() {
+    local app
+    local err=0
+    for app in "$@"; do
+        if ! command -v "$app" &> /dev/null; then
+            log error "dependency $app not found"
+            err=1
+        fi
+    done
+    if ((err == 0)); then
+        return 0
+    else
+        return 1
+    fi
+}
+
+check_deps_any() {
+    local app
+    local err=1
+    for app in "$@"; do
+        if command -v "$app" &> /dev/null; then
+            printf "%s" "$app"
+            return
+        fi
+    done
+    log error "none of the dependencies '$*' were found (one is required)"
+    return "$err"
+}
+
+# Reference: https://github.com/dylanaraps/pure-bash-bible
+trim_string() {
+    : "${1#"${1%%[![:space:]]*}"}"
+    : "${_%"${_##*[![:space:]]}"}"
+    printf '%s\n' "$_"
+}
+
+play() {
+    local url="$1"
+    case $player in
+        pw-play)
+            if ((cached_mode == 0)); then
+                log error "pw-play can't play remote URL: $url"
+                return 1
+            fi
+            pw-play "$url"
+            ;;
+        ffplay)
+            ffplay -hide_banner -nodisp -autoexit "$url"
+            ;;
+        mpv)
+            mpv --no-resume-playback --no-write-filename-in-watch-later-config \
+                --no-save-position-on-quit --no-keep-open "$url"
+            ;;
+        *)
+            log error "unsupported mp3 player app: $player"
+            return 1
+            ;;
+    esac
+}
+
+fetch_pattern() {
+    local outfile
+    local word
+    # convert word to lowercase
+    word="${*,,}"
+    if ((cached_mode)); then
+        outfile="$cache_dir/$date/$accent/${word}.mp3"
+    else
+        outfile="/dev/null"
+    fi
+
+    case $date in
+        "20200429")
+            local base="$base_2020"
+            local link
+            for x in "" "x" "_"; do
+                for a in "" "1"; do
+                    for b in "1" "1.4" "1.8" "2" "3"; do
+                        link="$base/$date/${x}${word// /_}--$a""_${accent}_$b.mp3"
+                        if ((verbosity)); then
+                            log debug "checking : $link"
+                        fi
+                        if curl --fail --silent --location --create-dirs \
+                            --output "$outfile" \
+                            "$link"; then
+                            printf "%s\n" "$link"
+                            return 0
+                        fi
+                    done
+                done
+            done
+            ;;
+        "20240419")
+            local base="$base_2024"
+            local link
+            link="$base/2024-04-19/audio"
+            link="$link/${word:0:2}/${word// /%20}_en_${accent}_1.mp3"
+            if ((verbosity)); then
+                log debug "checking : $link"
+            fi
+            if curl --fail --silent --location --create-dirs \
+                --output "$outfile" \
+                "$link"; then
+                printf "%s\n" "$link"
+                return 0
+            fi
+            :
+            ;;
+        *)
+            log error "Unsupported $date"
+            return 1
+            ;;
+    esac
+
+    # return error if a valid link according to predefined pattern is not found
+    log error "No valid link found according to patterns for '$word'"
+    return 1
+}
+
+while :; do
+    case $1 in
+        -h | --help)
+            show_help
+            exit 0
+            ;;
+        -V | --version)
+            printf "%s\n" "$version"
+            exit 0
+            ;;
+        -v | --debug)
+            verbosity=1
+            ;;
+        -n | --no-cache)
+            cached_mode=0
+            ;;
+        -a | --accent)
+            if [[ -n "$2" ]]; then
+                accent=$2
+                shift
+            else
+                log error \
+                    "Bad usage! --accent requires a non-empty option argument"
+                exit 2
+            fi
+            ;;
+        -y | --year)
+            if [[ -n "$2" ]]; then
+                year=$2
+                shift
+            else
+                log error \
+                    "Bad usage! --year requires a non-empty option argument"
+                exit 2
+            fi
+            ;;
+        -l | --link)
+            link_mode_flag=1
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -?*)
+            log error "Bad usage. Unknown option: $1"
+            exit 2
+            ;;
+        *)
+            break
+            ;;
+    esac
+    shift
+done
+
+query="$*"
+
+# sanitize query (e.g. strip '\r' in case of Windows)
+query=$(trim_string "$query")
+
+# sanitize accent
+case "$accent" in
+    gb | uk)
+        accent="gb"
+        ;;
+    us) ;;
+    *)
+        log error \
+            "Bad usage! Unsupported --accent: '$accent'. Check -h"
+        exit 2
+        ;;
+esac
+
+# sanitize year
+case "$year" in
+    2020)
+        date="20200429"
+        ;;
+    2024)
+        date="20240419"
+        ;;
+    *)
+        log error \
+            "Bad usage! Unsupported --year: '$year'. Check -h"
+        exit 2
+        ;;
+esac
+
+# check for existence of dependencies
+check_deps curl || exit 1
+if ! ((link_mode_flag)); then
+    player=$(check_deps_any ffplay mpv pw-play) || exit 1
+fi
+
+# check if query is non-empty
+if [[ -z "$query" ]]; then
+    log error "Bad usage! Expected 1 argument. Received $#"
+    exit 2
+fi
+
+# check if the word exists in cache
+if ((cached_mode)) && ((link_mode_flag == 0)); then
+    # convert word to lowercase
+    word="${query,,}"
+    url="$cache_dir/$date/$accent/${word}.mp3"
+    if [[ -e "$url" ]]; then
+        log debug "cache hit for '$date/$accent/$word.mp3'"
+        play "$url"
+        exit
+    fi
+fi
+
+# fetch the link from remote
+if ! link=$(fetch_pattern "$query"); then
+    exit 1
+fi
+
+# print or play the link
+if ((link_mode_flag)); then
+    printf "%s\n" "$link"
+else
+    play "$link"
+fi
