@@ -72,7 +72,7 @@ EXAMPLES
 
 ``` shell
 curl -sL https://github.com/sapbmw/The-Oxford-3000/raw/refs/heads/master/The_Oxford_3000.txt \
-    | tr -d \r | head -1000 | xargs -I {} gsay -l "{}"
+    | tr -d '\r' | head -1000 | xargs -I {} gsay -l "{}"
 ```
 
 
